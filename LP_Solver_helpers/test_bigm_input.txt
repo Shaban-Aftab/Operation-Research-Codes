@@ -1,0 +1,24 @@
+# Quick test for Big-M
+# Input: Maximize 2x1 + 3x2
+#        x1 + x2 = 4 (equality - requires artificial)
+#        x1 <= 3
+#        x2 <= 3
+
+print("1")  # Maximize
+print("2")  # 2 variables
+print("3")  # 3 constraints
+print("2")  # c1
+print("3")  # c2
+print("1")  # x1 coefficient
+print("1")  # x2 coefficient  
+print("3")  # Type = (equality)
+print("4")  # RHS
+print("1")  # x1 coef
+print("0")  # x2 coef
+print("1")  # Type <=
+print("3")  # RHS
+print("0")  # x1 coef
+print("1")  # x2 coef
+print("1")  # Type <=
+print("3")  # RHS
+print("")  # Press enter
