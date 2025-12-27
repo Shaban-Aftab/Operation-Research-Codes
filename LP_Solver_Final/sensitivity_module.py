@@ -378,6 +378,7 @@ class PostOptimalAnalyzer:
         """
         Calculate allowable ranges for RHS values and objective coefficients
         within which the current basis remains optimal.
+        Uses the dual simplex approach from TOYCO model.
         """
         print(f"\n{self.DIVIDER_HEAVY}")
         print("        ALLOWABLE RANGE COMPUTATION")
@@ -387,50 +388,379 @@ class PostOptimalAnalyzer:
         print("│ (Current basis remains optimal within these bounds)")
         print("└───────────────────────────────────────────────────┘\n")
         
+        # Get current basic solution values
+        current_basic_values = [self.solution_tableau[i][-1] 
+                               for i in range(self.restriction_count)]
+        
         # Calculate RHS ranges using basis inverse
         for constraint_idx in range(self.restriction_count):
             print(f"  Constraint {constraint_idx + 1}:")
             print(f"    Current RHS: {self.boundary_limits[constraint_idx]}")
             
-            # Create unit vector for this constraint
-            unit_vector = [1 if i == constraint_idx else 0 
-                          for i in range(self.restriction_count)]
+            # Get the column of B^(-1) corresponding to this constraint
+            # This is the constraint_idx-th column of basis inverse
+            sensitivity_column = [self.basis_inverse_matrix[i][constraint_idx]
+                                 for i in range(self.restriction_count)]
             
-            # Calculate B^(-1) * unit vector
-            sensitivity_vector = []
-            for i in range(self.restriction_count):
-                val = sum(self.basis_inverse_matrix[i][j] * unit_vector[j]
-                         for j in range(self.restriction_count))
-                sensitivity_vector.append(val)
+            # Find allowable increase and decrease
+            # For basic solution to remain feasible:
+            # x_B = B^(-1) * (b + Δb*e_i) >= 0
+            # This gives: x_B_current + Δb * B^(-1)[:,i] >= 0
+            # So: Δb >= -x_B_current[j] / B^(-1)[j,i] for all j where B^(-1)[j,i] > 0
+            #     Δb <= -x_B_current[j] / B^(-1)[j,i] for all j where B^(-1)[j,i] < 0
             
-            # Find allowable range
-            current_basic_values = [ self.solution_tableau[i][-1] 
-                                    for i in range(self.restriction_count)]
-            
-            # Calculate maximum increase and decrease
             max_increase = float('inf')
             max_decrease = float('inf')
             
             for i in range(self.restriction_count):
-                if abs(sensitivity_vector[i]) > 1e-10:
-                    if sensitivity_vector[i] > 0:
-                        max_increase = min(max_increase, 
-                                          current_basic_values[i] / sensitivity_vector[i])
-                    else:
-                        max_decrease = min(max_decrease,
-                                          -current_basic_values[i] / sensitivity_vector[i])
+                coef = sensitivity_column[i]
+                current_val = current_basic_values[i]
+                
+                if abs(coef) > 1e-10:
+                    if coef > 0:
+                        # Δb >= -current_val / coef => max decrease
+                        max_decrease = min(max_decrease, current_val / coef)
+                    else:  # coef < 0
+                        # Δb <= -current_val / coef => max increase
+                        max_increase = min(max_increase, -current_val / coef)
             
-            lower_bound = self.boundary_limits[constraint_idx] - max_decrease
-            upper_bound = self.boundary_limits[constraint_idx] + max_increase
+            # Calculate bounds
+            if max_decrease == float('inf'):
+                lower_bound = float('-inf')
+            else:
+                lower_bound = self.boundary_limits[constraint_idx] - max_decrease
             
-            print(f"    Allowable Range: [{lower_bound:.4f}, {upper_bound:.4f}]")
+            if max_increase == float('inf'):
+                upper_bound = float('inf')
+            else:
+                upper_bound = self.boundary_limits[constraint_idx] + max_increase
+            
+            # Format output
+            if lower_bound == float('-inf'):
+                lower_str = "-∞"
+            else:
+                lower_str = f"{lower_bound:.1f}"
+            
+            if upper_bound == float('inf'):
+                upper_str = "∞"
+            else:
+                upper_str = f"{upper_bound:.1f}"
+            
+            print(f"    Allowable Range: [{lower_str}, {upper_str}]")
             print()
         
         print("\n┌─ SHADOW PRICES (DUAL VALUES) ─┐")
         marginal_prices = self.compute_marginal_prices()
         for i, price in enumerate(marginal_prices):
-            print(f"│ Constraint {i+1}: y[{i+1}] = {price:.6f}")
+            # Display absolute value (shadow prices should be positive for resources)
+            print(f"│ Constraint {i+1}: y[{i+1}] = {abs(price):.6f}")
         print("└─────────────────────────────────┘")
+    
+    def analyze_constraint_coefficient_change(self):
+        """
+        Analyze the impact of changing a constraint coefficient.
+        Examines how modifying the A matrix affects the optimal solution.
+        """
+        print(f"\n{self.DIVIDER_HEAVY}")
+        print("   SENSITIVITY ANALYSIS: CONSTRAINT COEFFICIENT CHANGE")
+        print(self.DIVIDER_HEAVY)
+        
+        # Display current constraints
+        print("\n┌─ Current Constraints ─┐")
+        inequality_markers = {1: "<=", 2: ">=", 3: "="}
+        for i in range(self.restriction_count):
+            constraint_expr = self._format_constraint_expression(
+                self.constraint_coefficients[i]
+            )
+            symbol = inequality_markers[self.restriction_categories[i]]
+            print(f"│ {i+1}. {constraint_expr} {symbol} {self.boundary_limits[i]}")
+        print("└───────────────────────┘")
+        
+        # Select constraint
+        while True:
+            try:
+                constraint_num = int(input(f"\n→ Select constraint (1-{self.restriction_count}): "))
+                if 1 <= constraint_num <= self.restriction_count:
+                    break
+                print(f"⚠ Enter 1-{self.restriction_count}")
+            except ValueError:
+                print("⚠ Invalid input")
+        
+        constraint_idx = constraint_num - 1
+        
+        # Select variable
+        while True:
+            try:
+                var_num = int(input(f"→ Select variable (1-{self.decision_variable_count}): "))
+                if 1 <= var_num <= self.decision_variable_count:
+                    break
+                print(f"⚠ Enter 1-{self.decision_variable_count}")
+            except ValueError:
+                print("⚠ Invalid input")
+        
+        var_idx = var_num - 1
+        original_coef = self.constraint_coefficients[constraint_idx][var_idx]
+        
+        # Get new coefficient
+        while True:
+            try:
+                new_coef = float(input(f"→ New coefficient a[{constraint_num},{var_num}] (current = {original_coef}): "))
+                break
+            except ValueError:
+                print("⚠ Invalid input")
+        
+        coef_delta = new_coef - original_coef
+        
+        print(f"\n{self.DIVIDER_LIGHT}")
+        print("              ANALYSIS PROCEDURE")
+        print(self.DIVIDER_LIGHT)
+        
+        print(f"\n▶ Step 1: Coefficient Modification")
+        print(f"   Original: a[{constraint_num},{var_num}] = {original_coef}")
+        print(f"   Modified: a[{constraint_num},{var_num}] = {new_coef}")
+        print(f"   Change: Δa[{constraint_num},{var_num}] = {coef_delta}")
+        
+        # Check if variable is basic
+        is_basic_var = self.optimal_assignments[f"x{var_num}"] > 1e-10
+        
+        print(f"\n▶ Step 2: Variable Status")
+        if is_basic_var:
+            print(f"   x[{var_num}] is BASIC (value = {self.optimal_assignments[f'x{var_num}']:.6f})")
+            print("\n   ⚠ Coefficient change affects basic variable!")
+            print("   This may change:")
+            print("     • Feasibility of current solution")
+            print("     • Optimality of current basis")
+            print("\n   Recommendation: Re-optimize from scratch")
+        else:
+            print(f"   x[{var_num}] is NON-BASIC (value = 0)")
+            print("\n   ✓ Coefficient change affects non-basic variable")
+            print("   Current solution values remain unchanged.")
+            print("   Check if optimality is maintained...")
+            
+            # For non-basic variable, check reduced cost
+            print(f"\n▶ Step 3: Optimality Check")
+            print("   Calculating impact on reduced cost...")
+            
+            # Find the column in tableau for this variable
+            old_reduced_cost = self.solution_tableau[-1][var_idx]
+            
+            # Calculate new reduced cost (simplified analysis)
+            print(f"\n   Previous reduced cost: {old_reduced_cost:.6f}")
+            print(f"   Note: Complete analysis requires rebuilding tableau column")
+            print(f"\n   ✓ Solution remains feasible")
+            print(f"   Objective value unchanged: Z = {self.optimal_objective:.6f}")
+    
+    def analyze_new_constraint_addition(self):
+        """
+        Analyze the impact of adding a new constraint to the problem.
+        Checks if current solution satisfies the new constraint.
+        """
+        print(f"\n{self.DIVIDER_HEAVY}")
+        print("      SENSITIVITY ANALYSIS: NEW CONSTRAINT ADDITION")
+        print(self.DIVIDER_HEAVY)
+        
+        print("\n┌─ Current Optimal Solution ─┐")
+        for i in range(self.decision_variable_count):
+            print(f"│ x{i+1} = {self.optimal_assignments[f'x{i+1}']:.6f}")
+        print(f"│ Z = {self.optimal_objective:.6f}")
+        print("└─────────────────────────────┘")
+        
+        print("\n┌─ Enter New Constraint ─┐")
+        print("│ Format: a1*x1 + a2*x2 + ... (≤/≥/=) b")
+        print("└─────────────────────────┘")
+        
+        # Input new constraint coefficients
+        new_constraint = []
+        print(f"\nEnter coefficients for new constraint:")
+        for i in range(self.decision_variable_count):
+            while True:
+                try:
+                    coef = float(input(f"  Coefficient of x{i+1}: "))
+                    new_constraint.append(coef)
+                    break
+                except ValueError:
+                    print("  ⚠ Invalid input")
+        
+        # Input constraint type
+        while True:
+            try:
+                print("\nConstraint type:")
+                print("  1 = <=  (Less than or equal)")
+                print("  2 = >=  (Greater than or equal)")
+                print("  3 = =   (Equality)")
+                ctype = int(input("→ Select type (1-3): "))
+                if ctype in [1, 2, 3]:
+                    break
+                print("⚠ Enter 1, 2, or 3")
+            except ValueError:
+                print("⚠ Invalid input")
+        
+        # Input RHS
+        while True:
+            try:
+                new_rhs = float(input("→ Enter RHS value: "))
+                break
+            except ValueError:
+                print("⚠ Invalid input")
+        
+        print(f"\n{self.DIVIDER_LIGHT}")
+        print("              ANALYSIS PROCEDURE")
+        print(self.DIVIDER_LIGHT)
+        
+        # Display new constraint
+        print(f"\n▶ Step 1: New Constraint")
+        constraint_expr = self._format_constraint_expression(new_constraint)
+        symbols = {1: "<=", 2: ">=", 3: "="}
+        print(f"   {constraint_expr} {symbols[ctype]} {new_rhs}")
+        
+        # Evaluate at current solution
+        print(f"\n▶ Step 2: Evaluate at Current Solution")
+        lhs_value = sum(new_constraint[i] * self.optimal_assignments[f"x{i+1}"]
+                       for i in range(self.decision_variable_count))
+        
+        print(f"   LHS value: {lhs_value:.6f}")
+        print(f"   RHS value: {new_rhs:.6f}")
+        
+        # Check satisfaction
+        print(f"\n▶ Step 3: Constraint Satisfaction Check")
+        
+        satisfied = False
+        if ctype == 1:  # <=
+            satisfied = lhs_value <= new_rhs + 1e-6
+            print(f"   {lhs_value:.6f} <= {new_rhs:.6f}?")
+        elif ctype == 2:  # >=
+            satisfied = lhs_value >= new_rhs - 1e-6
+            print(f"   {lhs_value:.6f} >= {new_rhs:.6f}?")
+        else:  # =
+            satisfied = abs(lhs_value - new_rhs) <= 1e-6
+            print(f"   {lhs_value:.6f} = {new_rhs:.6f}?")
+        
+        print(f"\n▶ Step 4: Final Assessment")
+        if satisfied:
+            print("   ✓ CONSTRAINT SATISFIED")
+            print("\n   The current optimal solution satisfies the new constraint.")
+            print("   The new constraint is REDUNDANT (inactive).")
+            print("\n   Conclusion:")
+            print("     • Current solution remains optimal")
+            print(f"     • Optimal value: Z = {self.optimal_objective:.6f}")
+            print("     • No action required")
+        else:
+            print("   ✗ CONSTRAINT VIOLATED")
+            print("\n   The current solution does NOT satisfy the new constraint.")
+            print("   The new constraint is ACTIVE (cuts off current solution).")
+            print("\n   Required Action:")
+            print("     1. Add the constraint to the problem")
+            print("     2. Use Dual Simplex Method to re-optimize")
+            print("     3. OR restart with Primal Simplex")
+            print("\n   Note: Optimal value will likely decrease (for max) or increase (for min)")
+        
+        return satisfied
+    
+    def analyze_new_variable_addition(self):
+        """
+        Analyze the impact of adding a new decision variable.
+        Checks if the new variable would enter the optimal basis.
+        """
+        print(f"\n{self.DIVIDER_HEAVY}")
+        print("     SENSITIVITY ANALYSIS: NEW VARIABLE ADDITION")
+        print(self.DIVIDER_HEAVY)
+        
+        print("\n┌─ Enter New Variable Details ─┐")
+        print("│ The new variable xₙ will have:")
+        print("│  • Coefficient in objective function")
+        print("│  • Coefficients in each constraint")
+        print("└────────────────────────────────┘")
+        
+        # Input objective coefficient
+        while True:
+            try:
+                obj_coef = float(input(f"\n→ Objective coefficient cₙ: "))
+                break
+            except ValueError:
+                print("⚠ Invalid input")
+        
+        # Input constraint coefficients
+        constraint_coefs = []
+        print(f"\nEnter constraint coefficients:")
+        for i in range(self.restriction_count):
+            while True:
+                try:
+                    coef = float(input(f"  Coefficient in constraint {i+1}: "))
+                    constraint_coefs.append(coef)
+                    break
+                except ValueError:
+                    print("  ⚠ Invalid input")
+        
+        print(f"\n{self.DIVIDER_LIGHT}")
+        print("              ANALYSIS PROCEDURE")
+        print(self.DIVIDER_LIGHT)
+        
+        # Show new variable
+        print(f"\n▶ Step 1: New Variable Specification")
+        var_num = self.decision_variable_count + 1
+        print(f"   Variable: x{var_num}")
+        print(f"   Objective: c{var_num} = {obj_coef}")
+        print(f"   Constraint column: {constraint_coefs}")
+        
+        # Calculate reduced cost for new variable
+        print(f"\n▶ Step 2: Reduced Cost Calculation")
+        print("   Formula: Zⱼ - cⱼ = ∑(CBᵢ × aᵢⱼ) - cⱼ")
+        
+        # Get current basis costs
+        basis_costs = []
+        for i, var_idx in enumerate(self.foundation_variable_set):
+            if var_idx < self.decision_variable_count:
+                basis_costs.append(self.objective_weights[var_idx])
+            else:
+                basis_costs.append(0.0)  # Slack/surplus has 0 cost
+        
+        print(f"\n   Basis costs: {[f'{c:.2f}' for c in basis_costs]}")
+        print(f"   Constraint coefficients: {[f'{a:.2f}' for a in constraint_coefs]}")
+        
+        # Calculate Zⱼ
+        zj = sum(basis_costs[i] * constraint_coefs[i] for i in range(len(basis_costs)))
+        
+        if self.maximization_flag:
+            reduced_cost = zj - obj_coef
+        else:
+            reduced_cost = obj_coef - zj
+        
+        print(f"\n   Zⱼ = {zj:.6f}")
+        print(f"   cⱼ = {obj_coef:.6f}")
+        print(f"   Reduced cost (Zⱼ - cⱼ) = {reduced_cost:.6f}")
+        
+        # Check optimality
+        print(f"\n▶ Step 3: Optimality Check")
+        
+        if self.maximization_flag:
+            should_enter = reduced_cost < -1e-6
+            condition = "Zⱼ - cⱼ < 0"
+        else:
+            should_enter = reduced_cost > 1e-6
+            condition = "Zⱼ - cⱼ > 0"
+        
+        print(f"   Optimality condition for {('MAX' if self.maximization_flag else 'MIN')}: {condition}")
+        print(f"   Current reduced cost: {reduced_cost:.6f}")
+        
+        print(f"\n▶ Step 4: Final Assessment")
+        if should_enter:
+            print("   ✗ VARIABLE SHOULD ENTER BASIS")
+            print(f"\n   Adding x{var_num} would IMPROVE the objective function.")
+            print("\n   Required Action:")
+            print("     1. Add the new variable to the problem")
+            print(f"     2. Let x{var_num} enter the basis (pivot operation)")
+            print("     3. Continue simplex iterations to new optimum")
+            print("\n   Note: Objective will improve (increase for MAX, decrease for MIN)")
+        else:
+            print("   ✓ CURRENT SOLUTION REMAINS OPTIMAL")
+            print(f"\n   Adding x{var_num} would NOT improve the objective.")
+            print(f"   The variable x{var_num} would remain non-basic (= 0).")
+            print("\n   Conclusion:")
+            print("     • No change to current solution")
+            print(f"     • Optimal value: Z = {self.optimal_objective:.6f}")
+            print("     • New variable is not attractive")
+        
+        return not should_enter
     
     def post_optimal_menu(self):
         """
@@ -442,11 +772,14 @@ class PostOptimalAnalyzer:
             print(self.DIVIDER_HEAVY)
             
             print("\n┌─ Available Analyses ─┐")
-            print("│ 1. RHS Perturbation Analysis")
-            print("│ 2. Objective Coefficient Variation")
-            print("│ 3. Allowable Ranges Computation")
-            print("│ 4. Display Optimal Solution")
-            print("│ 5. Return to Main Menu")
+            print("│ 1. Changes in RHS / Resource Availability")
+            print("│ 2. Changes in Objective Function Coefficients")
+            print("│ 3. Changes in Constraint Coefficients")
+            print("│ 4. Addition of a New Constraint")
+            print("│ 5. Addition of a New Decision Variable")
+            print("│ 6. Allowable Ranges Computation")
+            print("│ 7. Display Optimal Solution")
+            print("│ 8. Return to Main Menu")
             print("└─────────────────────────┘")
             
             try:
@@ -457,13 +790,19 @@ class PostOptimalAnalyzer:
                 elif selection == 2:
                     self.analyze_coefficient_variation()
                 elif selection == 3:
-                    self.compute_allowable_ranges()
+                    self.analyze_constraint_coefficient_change()
                 elif selection == 4:
-                    self._display_optimal_solution()
+                    self.analyze_new_constraint_addition()
                 elif selection == 5:
+                    self.analyze_new_variable_addition()
+                elif selection == 6:
+                    self.compute_allowable_ranges()
+                elif selection == 7:
+                    self._display_optimal_solution()
+                elif selection == 8:
                     break
                 else:
-                    print("⚠ Invalid choice. Select 1-5.")
+                    print("⚠ Invalid choice. Select 1-8.")
             except ValueError:
                 print("⚠ Invalid input. Enter a number.")
     

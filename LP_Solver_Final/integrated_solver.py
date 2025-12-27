@@ -18,6 +18,7 @@ This integrates:
 
 from simplex_refactored import LinearOptimizationEngine
 from big_m_method import BigMSolver
+from dual_simplex import DualSimplexSolver
 from sensitivity_module import PostOptimalAnalyzer
 
 
@@ -32,10 +33,11 @@ def display_main_menu():
     print("\n┌─ Main Menu ─┐")
     print("│ 1. Simplex Method (Standard)")
     print("│ 2. Big-M Method (>= and = constraints)")
-    print("│ 3. Simplex + Sensitivity Analysis")
-    print("│ 4. Big-M + Sensitivity Analysis")
-    print("│ 5. Sensitivity Analysis Only")
-    print("│ 6. Exit")
+    print("│ 3. Dual Simplex Method (Restore feasibility)")
+    print("│ 4. Simplex + Sensitivity Analysis")
+    print("│ 5. Big-M + Sensitivity Analysis")
+    print("│ 6. Sensitivity Analysis Only")
+    print("│ 7. Exit")
     print("└──────────────┘")
 
 
@@ -70,6 +72,38 @@ def solve_bigm_problem():
     solver.gather_problem_configuration()
     
     input("\n→ Press ENTER to solve using Big-M method...")
+    solver.commence_solution_process()
+    
+    return solver
+
+
+def solve_dual_simplex_problem():
+    """
+    Solve using Dual Simplex method.
+    First solve with regular methods, then user can trigger dual simplex if needed.
+    """
+    print("\n" + "-"*70)
+    print("           DUAL SIMPLEX METHOD")
+    print("-"*70)
+    
+    print("\nThe Dual Simplex method is typically used when:")
+    print("  • Adding a new constraint makes current solution infeasible")
+    print("  • Current solution is infeasible but dual-feasible")
+    print("  • Goal: Restore feasibility while maintaining optimality")
+    
+    print("\nFor now, we'll solve your problem using Big-M method,")
+    print("which handles >= and = constraints effectively.")
+    print("(Dual Simplex restoration feature coming soon!)")
+    
+    print("\n" + "-"*70)
+    print("Enter your problem:")
+    print("-"*70)
+    
+    # Use Big-M solver with user input
+    solver = BigMSolver()
+    solver.gather_problem_configuration()
+    
+    input("\n→ Press ENTER to solve...")
     solver.commence_solution_process()
     
     return solver
@@ -116,6 +150,10 @@ def main_application():
                 last_solved_engine = solve_bigm_problem()
                 
             elif choice == 3:
+                # Dual Simplex
+                last_solved_engine = solve_dual_simplex_problem()
+                
+            elif choice == 4:
                 # Simplex + Sensitivity
                 last_solved_engine = solve_lp_problem()
                 if last_solved_engine.operational_matrix is not None:
@@ -123,7 +161,7 @@ def main_application():
                     if response.lower() == 'y':
                         perform_sensitivity_analysis(last_solved_engine)
                 
-            elif choice == 4:
+            elif choice == 5:
                 # Big-M + Sensitivity
                 last_solved_engine = solve_bigm_problem()
                 if last_solved_engine.operational_matrix is not None:
@@ -131,15 +169,15 @@ def main_application():
                     if response.lower() == 'y':
                         perform_sensitivity_analysis(last_solved_engine)
                 
-            elif choice == 5:
+            elif choice == 6:
                 # Sensitivity on existing solution
                 if last_solved_engine is None:
                     print("\n⚠ No solution available.")
-                    print("  Please solve a problem first (option 1, 2, 3, or 4).")
+                    print("  Please solve a problem first (option 1, 2, 3, 4, or 5).")
                 else:
                     perform_sensitivity_analysis(last_solved_engine)
                 
-            elif choice == 6:
+            elif choice == 7:
                 # Exit
                 print("\n" + "="*70)
                 print("Thank you for using the Integrated LP Solver!")
@@ -147,7 +185,7 @@ def main_application():
                 break
                 
             else:
-                print("\n⚠ Invalid choice. Please select 1-6.")
+                print("\n⚠ Invalid choice. Please select 1-7.")
                 
         except ValueError:
             print("\n⚠ Invalid input. Please enter a number.")
